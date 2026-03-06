@@ -25,6 +25,7 @@ const (
 	wsRequestTypeCreate  = "response.create"
 	wsRequestTypeAppend  = "response.append"
 	wsEventTypeError     = "error"
+	wsEventTypeCreated   = "response.created"
 	wsEventTypeCompleted = "response.completed"
 	wsDoneMarker         = "[DONE]"
 	wsTurnStateHeader    = "x-codex-turn-state"
@@ -75,6 +76,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 	var lastRequest []byte
 	lastResponseOutput := []byte("[]")
 	pinnedAuthID := ""
+	lastLocalPrewarmResponseID := ""
 
 	for {
 		msgType, payload, errReadMessage := conn.ReadMessage()
@@ -100,10 +102,11 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		// )
 		appendWebsocketEvent(&wsBodyLog, "request", payload)
 
-		allowIncrementalInputWithPreviousResponseID := websocketUpstreamSupportsIncrementalInput(nil, nil)
-		if pinnedAuthID != "" && h != nil && h.AuthManager != nil {
+		requestAllowsIncrementalInputWithPreviousResponseID := strings.TrimSpace(gjson.GetBytes(payload, "previous_response_id").String()) != "" &&
+			strings.TrimSpace(gjson.GetBytes(payload, "previous_response_id").String()) == lastLocalPrewarmResponseID
+		if !requestAllowsIncrementalInputWithPreviousResponseID && pinnedAuthID != "" && h != nil && h.AuthManager != nil {
 			if pinnedAuth, ok := h.AuthManager.GetByID(pinnedAuthID); ok && pinnedAuth != nil {
-				allowIncrementalInputWithPreviousResponseID = websocketUpstreamSupportsIncrementalInput(pinnedAuth.Attributes, pinnedAuth.Metadata)
+				requestAllowsIncrementalInputWithPreviousResponseID = websocketUpstreamSupportsIncrementalInput(pinnedAuth.Attributes, pinnedAuth.Metadata)
 			}
 		}
 
@@ -114,7 +117,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			payload,
 			lastRequest,
 			lastResponseOutput,
-			allowIncrementalInputWithPreviousResponseID,
+			requestAllowsIncrementalInputWithPreviousResponseID,
 		)
 		if errMsg != nil {
 			h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errMsg)
@@ -140,6 +143,28 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			continue
 		}
 		lastRequest = updatedLastRequest
+
+		if isResponsesWebsocketPrewarmRequest(payload) {
+			responseID, payloads := buildResponsesWebsocketPrewarmPayloads(requestJSON)
+			lastLocalPrewarmResponseID = responseID
+			lastResponseOutput = []byte("[]")
+			for _, syntheticPayload := range payloads {
+				markAPIResponseTimestamp(c)
+				appendWebsocketEvent(&wsBodyLog, "response", syntheticPayload)
+				if errWrite := conn.WriteMessage(websocket.TextMessage, syntheticPayload); errWrite != nil {
+					wsTerminateErr = errWrite
+					appendWebsocketEvent(&wsBodyLog, "disconnect", []byte(errWrite.Error()))
+					log.Warnf(
+						"responses websocket: downstream_out write failed id=%s event=%s error=%v",
+						passthroughSessionID,
+						websocketPayloadEventType(syntheticPayload),
+						errWrite,
+					)
+					return
+				}
+			}
+			continue
+		}
 
 		modelName := gjson.GetBytes(requestJSON, "model").String()
 		cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
@@ -221,6 +246,66 @@ func normalizeResponseCreateRequest(rawJSON []byte) ([]byte, []byte, *interfaces
 		}
 	}
 	return normalized, bytes.Clone(normalized), nil
+}
+
+func isResponsesWebsocketPrewarmRequest(rawJSON []byte) bool {
+	if strings.TrimSpace(gjson.GetBytes(rawJSON, "type").String()) != wsRequestTypeCreate {
+		return false
+	}
+	if prev := strings.TrimSpace(gjson.GetBytes(rawJSON, "previous_response_id").String()); prev != "" {
+		return false
+	}
+	generate := gjson.GetBytes(rawJSON, "generate")
+	return generate.Exists() && !generate.Bool()
+}
+
+func buildResponsesWebsocketPrewarmPayloads(requestJSON []byte) (string, [][]byte) {
+	responseID := "resp_prewarm_" + uuid.NewString()
+	createdAt := time.Now().Unix()
+
+	created := map[string]any{
+		"type": wsEventTypeCreated,
+		"response": map[string]any{
+			"id":         responseID,
+			"object":     "response",
+			"created_at": createdAt,
+			"status":     "in_progress",
+			"background": false,
+			"error":      nil,
+			"output":     []any{},
+		},
+	}
+	if modelName := strings.TrimSpace(gjson.GetBytes(requestJSON, "model").String()); modelName != "" {
+		created["response"].(map[string]any)["model"] = modelName
+	}
+
+	done := map[string]any{
+		"type": wsEventTypeDone,
+		"response": map[string]any{
+			"id":                 responseID,
+			"object":             "response",
+			"created_at":         createdAt,
+			"status":             "completed",
+			"background":         false,
+			"error":              nil,
+			"incomplete_details": nil,
+			"output":             []any{},
+			"usage": map[string]any{
+				"input_tokens":          0,
+				"input_tokens_details":  map[string]any{"cached_tokens": 0},
+				"output_tokens":         0,
+				"output_tokens_details": map[string]any{},
+				"total_tokens":          0,
+			},
+		},
+	}
+	if modelName := strings.TrimSpace(gjson.GetBytes(requestJSON, "model").String()); modelName != "" {
+		done["response"].(map[string]any)["model"] = modelName
+	}
+
+	createdJSON, _ := json.Marshal(created)
+	doneJSON, _ := json.Marshal(done)
+	return responseID, [][]byte{createdJSON, doneJSON}
 }
 
 func normalizeResponseSubsequentRequest(rawJSON []byte, lastRequest []byte, lastResponseOutput []byte, allowIncrementalInputWithPreviousResponseID bool) ([]byte, []byte, *interfaces.ErrorMessage) {
