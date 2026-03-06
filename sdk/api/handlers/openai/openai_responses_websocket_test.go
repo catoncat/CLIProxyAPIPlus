@@ -423,6 +423,7 @@ func TestSetWebsocketRequestBody(t *testing.T) {
 	}
 }
 
+<<<<<<< HEAD
 func TestForwardResponsesWebsocketPreservesCompletedEvent(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -499,6 +500,8 @@ func TestForwardResponsesWebsocketPreservesCompletedEvent(t *testing.T) {
 	}
 }
 
+=======
+>>>>>>> 5bf38ee7 (fix: support codex ws v2 completed events)
 func TestResponsesWebsocketCodexV2UsesCompletedEvents(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -579,8 +582,13 @@ func TestResponsesWebsocketCodexV2UsesCompletedEvents(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("executor calls after second request = %d, want 1", calls)
 	}
+<<<<<<< HEAD
 	if gjson.GetBytes(forwardedPayload, "previous_response_id").Exists() {
 		t.Fatalf("forwarded previous_response_id must be removed after local prewarm")
+=======
+	if gjson.GetBytes(forwardedPayload, "previous_response_id").String() != prewarmID {
+		t.Fatalf("forwarded previous_response_id = %q, want %q", gjson.GetBytes(forwardedPayload, "previous_response_id").String(), prewarmID)
+>>>>>>> 5bf38ee7 (fix: support codex ws v2 completed events)
 	}
 }
 

@@ -29,6 +29,7 @@ const (
 	wsEventTypeCompleted = "response.completed"
 	wsDoneMarker         = "[DONE]"
 	wsTurnStateHeader    = "x-codex-turn-state"
+	wsOpenAIBetaHeader   = "OpenAI-Beta"
 	wsRequestBodyKey     = "REQUEST_BODY_OVERRIDE"
 	wsPayloadLogMaxSize  = 2048
 )
@@ -51,6 +52,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 	}
 	passthroughSessionID := uuid.NewString()
 	clientRemoteAddr := ""
+	useCompletedEvents := websocketClientPrefersCompleted(c.Request)
 	if c != nil && c.Request != nil {
 		clientRemoteAddr = strings.TrimSpace(c.Request.RemoteAddr)
 	}
@@ -145,7 +147,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		lastRequest = updatedLastRequest
 
 		if isResponsesWebsocketPrewarmRequest(payload) {
-			responseID, payloads := buildResponsesWebsocketPrewarmPayloads(requestJSON)
+			responseID, payloads := buildResponsesWebsocketPrewarmPayloads(requestJSON, useCompletedEvents)
 			lastLocalPrewarmResponseID = responseID
 			lastResponseOutput = []byte("[]")
 			for _, syntheticPayload := range payloads {
@@ -179,7 +181,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		}
 		dataChan, _, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, requestJSON, "")
 
-		completedOutput, errForward := h.forwardResponsesWebsocket(c, conn, cliCancel, dataChan, errChan, &wsBodyLog, passthroughSessionID)
+		completedOutput, errForward := h.forwardResponsesWebsocket(c, conn, cliCancel, dataChan, errChan, &wsBodyLog, passthroughSessionID, useCompletedEvents)
 		if errForward != nil {
 			wsTerminateErr = errForward
 			appendWebsocketEvent(&wsBodyLog, "disconnect", []byte(errForward.Error()))
@@ -188,6 +190,14 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		}
 		lastResponseOutput = completedOutput
 	}
+}
+
+func websocketClientPrefersCompleted(req *http.Request) bool {
+	if req == nil {
+		return false
+	}
+	betaHeader := strings.TrimSpace(req.Header.Get(wsOpenAIBetaHeader))
+	return betaHeader != "" && strings.Contains(betaHeader, "responses_websockets=")
 }
 
 func websocketUpgradeHeaders(req *http.Request) http.Header {
@@ -259,7 +269,7 @@ func isResponsesWebsocketPrewarmRequest(rawJSON []byte) bool {
 	return generate.Exists() && !generate.Bool()
 }
 
-func buildResponsesWebsocketPrewarmPayloads(requestJSON []byte) (string, [][]byte) {
+func buildResponsesWebsocketPrewarmPayloads(requestJSON []byte, useCompletedEvents bool) (string, [][]byte) {
 	responseID := "resp_prewarm_" + uuid.NewString()
 	createdAt := time.Now().Unix()
 
@@ -304,8 +314,11 @@ func buildResponsesWebsocketPrewarmPayloads(requestJSON []byte) (string, [][]byt
 	}
 
 	createdJSON, _ := json.Marshal(created)
-	doneJSON, _ := json.Marshal(done)
-	return responseID, [][]byte{createdJSON, doneJSON}
+	completedJSON, _ := json.Marshal(done)
+	if useCompletedEvents {
+		completedJSON, _ = sjson.SetBytes(completedJSON, "type", wsEventTypeCompleted)
+	}
+	return responseID, [][]byte{createdJSON, completedJSON}
 }
 
 func normalizeResponseSubsequentRequest(rawJSON []byte, lastRequest []byte, lastResponseOutput []byte, allowIncrementalInputWithPreviousResponseID bool) ([]byte, []byte, *interfaces.ErrorMessage) {
@@ -471,6 +484,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 	errs <-chan *interfaces.ErrorMessage,
 	wsBodyLog *strings.Builder,
 	sessionID string,
+	useCompletedEvents bool,
 ) ([]byte, error) {
 	completed := false
 	completedOutput := []byte("[]")
@@ -555,6 +569,9 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 				if eventType == wsEventTypeCompleted {
 					completed = true
 					completedOutput = responseCompletedOutputFromPayload(payloads[i])
+					if !useCompletedEvents {
+						payloads[i], _ = sjson.SetBytes(payloads[i], "type", wsEventTypeDone)
+					}
 				}
 				markAPIResponseTimestamp(c)
 				appendWebsocketEvent(wsBodyLog, "response", payloads[i])
