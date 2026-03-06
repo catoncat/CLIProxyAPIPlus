@@ -304,7 +304,7 @@ func buildResponsesWebsocketPrewarmPayloads(requestJSON []byte, useCompletedEven
 				"input_tokens":          0,
 				"input_tokens_details":  map[string]any{"cached_tokens": 0},
 				"output_tokens":         0,
-				"output_tokens_details": map[string]any{},
+				"output_tokens_details": map[string]any{"reasoning_tokens": 0},
 				"total_tokens":          0,
 			},
 		},
