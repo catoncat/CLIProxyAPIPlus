@@ -125,6 +125,42 @@ cd ~/cli-proxy
 docker compose pull && docker compose up -d
 ```
 
+## cliproxy Dev Script
+
+This repository includes a local development helper script: `scripts/cliproxy.sh`.
+It standardizes build/start/stop/log/model-list operations for local CLIProxyAPIPlus development.
+
+Purpose:
+- Reduce repetitive local commands (`go build`, `nohup`, `tail`, etc.)
+- Provide one consistent entrypoint for day-to-day development
+- Avoid hardcoded machine-specific sensitive values (path/API key/endpoint are all configurable)
+
+Quick start:
+
+```bash
+# From repo root
+chmod +x scripts/cliproxy.sh
+scripts/cliproxy.sh status
+scripts/cliproxy.sh start
+scripts/cliproxy.sh models
+```
+
+Install as a global command:
+
+```bash
+ln -sf "$(pwd)/scripts/cliproxy.sh" ~/.local/bin/cliproxy
+cliproxy status
+```
+
+Optional environment variables:
+- `CLIPROXY_PROJECT_DIR`: Project directory (default: repository root inferred from script path)
+- `CLIPROXY_CONFIG_DIR`: Runtime/config directory (default: same as project directory)
+- `CLIPROXY_API_BASE_URL`: API base URL (default: `http://localhost:8317`)
+- `CLIPROXY_API_KEY`: Bearer token used for `/v1/models` and status checks (default: empty)
+- `CLIPROXY_LOG_FILE`: Log file path (default: `/tmp/cli-proxy.log`)
+- `CLIPROXY_PID_FILE`: PID file path (default: `/tmp/cli-proxy.pid`)
+- `CLIPROXY_DEV_BIN`: Compiled dev binary path (default: `/tmp/cli-proxy-dev`)
+
 ## Contributing
 
 This project only accepts pull requests that relate to third-party provider support. Any pull requests unrelated to third-party provider support will be rejected.

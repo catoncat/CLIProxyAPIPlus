@@ -125,6 +125,41 @@ cd ~/cli-proxy
 docker compose pull && docker compose up -d
 ```
 
+## cliproxy 开发脚本
+
+仓库内提供了本地开发管理脚本 `scripts/cliproxy.sh`，用于统一开发时的编译、启动、停止、查看日志和模型列表。
+
+目的：
+- 减少本地手动执行 `go build` / `nohup` / `tail` 的重复操作
+- 提供一致的开发启动入口，方便团队协作
+- 避免硬编码本机敏感信息（目录、API Key、端口等均可配置）
+
+快速使用：
+
+```bash
+# 在仓库根目录
+chmod +x scripts/cliproxy.sh
+scripts/cliproxy.sh status
+scripts/cliproxy.sh start
+scripts/cliproxy.sh models
+```
+
+如果希望全局命令：
+
+```bash
+ln -sf "$(pwd)/scripts/cliproxy.sh" ~/.local/bin/cliproxy
+cliproxy status
+```
+
+常用环境变量（均为可选）：
+- `CLIPROXY_PROJECT_DIR`：项目目录（默认脚本所在仓库根目录）
+- `CLIPROXY_CONFIG_DIR`：运行目录/配置目录（默认同项目目录）
+- `CLIPROXY_API_BASE_URL`：API 地址（默认 `http://localhost:8317`）
+- `CLIPROXY_API_KEY`：请求 `/v1/models` 等接口使用的 Bearer Token（默认空）
+- `CLIPROXY_LOG_FILE`：日志文件路径（默认 `/tmp/cli-proxy.log`）
+- `CLIPROXY_PID_FILE`：PID 文件路径（默认 `/tmp/cli-proxy.pid`）
+- `CLIPROXY_DEV_BIN`：开发二进制输出路径（默认 `/tmp/cli-proxy-dev`）
+
 ## 贡献
 
 该项目仅接受第三方供应商支持的 Pull Request。任何非第三方供应商支持的 Pull Request 都将被拒绝。
