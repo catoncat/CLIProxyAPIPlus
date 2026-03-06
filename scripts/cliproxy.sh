@@ -80,6 +80,33 @@ do_build() {
     return 0
 }
 
+do_sync_upstream() {
+    if [ ! -d "$PROJECT_DIR/.git" ]; then
+        echo -e "${RED}不是 git 仓库: ${PROJECT_DIR}${NC}"
+        return 1
+    fi
+
+    if [ -n "$(git -C "$PROJECT_DIR" status --porcelain)" ]; then
+        echo -e "${RED}工作区不干净，请先提交/暂存后再执行 sync${NC}"
+        return 1
+    fi
+
+    local branch
+    branch="$(git -C "$PROJECT_DIR" branch --show-current 2>/dev/null || true)"
+    if [ -z "$branch" ]; then
+        echo -e "${RED}无法识别当前分支${NC}"
+        return 1
+    fi
+
+    echo -e "${BLUE}fetch upstream...${NC}"
+    git -C "$PROJECT_DIR" fetch upstream
+    echo -e "${BLUE}rebase upstream/main...${NC}"
+    git -C "$PROJECT_DIR" rebase upstream/main
+    echo -e "${BLUE}push origin/${branch}...${NC}"
+    git -C "$PROJECT_DIR" push --force-with-lease origin "$branch"
+    echo -e "${GREEN}同步完成: ${branch} 已对齐 upstream/main 并推送到 origin${NC}"
+}
+
 show_help() {
     cat <<EOF
 cli-proxy 本地开发管理脚本
@@ -97,6 +124,7 @@ cli-proxy 本地开发管理脚本
   build    仅编译不启动
   version  查看版本信息
   update   git pull 并重启
+  sync     同步 upstream/main 并推送到 origin（rebase + force-with-lease）
 
 环境变量:
   CLIPROXY_PROJECT_DIR   项目目录 (默认: ${PROJECT_DIR})
@@ -211,6 +239,9 @@ case "$cmd" in
             echo -e "${BLUE}重新编译并重启...${NC}"
             "$0" restart
         fi
+        ;;
+    sync)
+        do_sync_upstream
         ;;
     *)
         show_help

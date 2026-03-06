@@ -143,6 +143,7 @@ chmod +x scripts/cliproxy.sh
 scripts/cliproxy.sh status
 scripts/cliproxy.sh start
 scripts/cliproxy.sh models
+scripts/cliproxy.sh sync
 ```
 
 Install as a global command:

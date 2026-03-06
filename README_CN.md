@@ -142,6 +142,7 @@ chmod +x scripts/cliproxy.sh
 scripts/cliproxy.sh status
 scripts/cliproxy.sh start
 scripts/cliproxy.sh models
+scripts/cliproxy.sh sync
 ```
 
 如果希望全局命令：
