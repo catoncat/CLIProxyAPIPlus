@@ -6,6 +6,48 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestConvertOpenAIResponsesRequestToCodex_ServiceTierNormalization(t *testing.T) {
+	tests := []struct {
+		name         string
+		inputTier    string
+		expectedTier string
+		shouldExist  bool
+	}{
+		{name: "priority preserved", inputTier: "priority", expectedTier: "priority", shouldExist: true},
+		{name: "flex preserved", inputTier: "flex", expectedTier: "flex", shouldExist: true},
+		{name: "fast maps to priority", inputTier: "fast", expectedTier: "priority", shouldExist: true},
+		{name: "invalid removed", inputTier: "default", shouldExist: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inputJSON := []byte(`{
+				"model": "gpt-5.2",
+				"input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+				"service_tier": "` + tt.inputTier + `"
+			}`)
+
+			output := ConvertOpenAIResponsesRequestToCodex("gpt-5.2", inputJSON, false)
+			outputStr := string(output)
+
+			tier := gjson.Get(outputStr, "service_tier")
+			if tt.shouldExist {
+				if !tier.Exists() {
+					t.Fatalf("expected service_tier to exist")
+				}
+				if tier.String() != tt.expectedTier {
+					t.Fatalf("expected service_tier=%q, got %q", tt.expectedTier, tier.String())
+				}
+				return
+			}
+
+			if tier.Exists() {
+				t.Fatalf("expected service_tier to be removed, got %q", tier.String())
+			}
+		})
+	}
+}
+
 // TestConvertSystemRoleToDeveloper_BasicConversion tests the basic system -> developer role conversion
 func TestConvertSystemRoleToDeveloper_BasicConversion(t *testing.T) {
 	inputJSON := []byte(`{

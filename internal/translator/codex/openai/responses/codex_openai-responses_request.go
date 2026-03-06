@@ -25,12 +25,7 @@ func ConvertOpenAIResponsesRequestToCodex(modelName string, inputRawJSON []byte,
 	rawJSON, _ = sjson.DeleteBytes(rawJSON, "max_completion_tokens")
 	rawJSON, _ = sjson.DeleteBytes(rawJSON, "temperature")
 	rawJSON, _ = sjson.DeleteBytes(rawJSON, "top_p")
-	if v := gjson.GetBytes(rawJSON, "service_tier"); v.Exists() {
-		if v.String() != "priority" {
-			rawJSON, _ = sjson.DeleteBytes(rawJSON, "service_tier")
-		}
-	}
-
+	rawJSON = normalizeServiceTier(rawJSON)
 	rawJSON, _ = sjson.DeleteBytes(rawJSON, "truncation")
 	rawJSON = applyResponsesCompactionCompatibility(rawJSON)
 
@@ -80,5 +75,27 @@ func convertSystemRoleToDeveloper(rawJSON []byte) []byte {
 		}
 	}
 
+	return result
+}
+
+func normalizeServiceTier(rawJSON []byte) []byte {
+	serviceTier := gjson.GetBytes(rawJSON, "service_tier")
+	if serviceTier.Type != gjson.String {
+		result, _ := sjson.DeleteBytes(rawJSON, "service_tier")
+		return result
+	}
+
+	var normalized string
+	switch serviceTier.String() {
+	case "priority", "flex":
+		normalized = serviceTier.String()
+	case "fast":
+		normalized = "priority"
+	default:
+		result, _ := sjson.DeleteBytes(rawJSON, "service_tier")
+		return result
+	}
+
+	result, _ := sjson.SetBytes(rawJSON, "service_tier", normalized)
 	return result
 }

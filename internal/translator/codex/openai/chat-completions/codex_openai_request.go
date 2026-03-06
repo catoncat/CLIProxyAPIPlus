@@ -59,6 +59,11 @@ func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 	} else {
 		out, _ = sjson.Set(out, "reasoning.effort", "medium")
 	}
+	// Map service tier for Codex fast mode compatibility.
+	// Accept "fast" as an alias and normalize it to OpenAI Responses "priority".
+	if serviceTier, ok := normalizeCodexServiceTier(gjson.GetBytes(rawJSON, "service_tier")); ok {
+		out, _ = sjson.Set(out, "service_tier", serviceTier)
+	}
 	out, _ = sjson.Set(out, "parallel_tool_calls", true)
 	out, _ = sjson.Set(out, "reasoning.summary", "auto")
 	out, _ = sjson.Set(out, "include", []string{"reasoning.encrypted_content"})
@@ -352,6 +357,21 @@ func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 
 	out, _ = sjson.Set(out, "store", false)
 	return []byte(out)
+}
+
+func normalizeCodexServiceTier(v gjson.Result) (string, bool) {
+	if !v.Exists() {
+		return "", false
+	}
+	value := strings.ToLower(strings.TrimSpace(v.String()))
+	switch value {
+	case "fast", "priority":
+		return "priority", true
+	case "flex":
+		return "flex", true
+	default:
+		return "", false
+	}
 }
 
 // shortenNameIfNeeded applies the simple shortening rule for a single name.
