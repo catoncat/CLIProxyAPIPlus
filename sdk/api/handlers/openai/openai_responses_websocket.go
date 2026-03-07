@@ -27,6 +27,7 @@ const (
 	wsEventTypeError     = "error"
 	wsEventTypeCreated   = "response.created"
 	wsEventTypeCompleted = "response.completed"
+	wsEventTypeDone      = "response.done"
 	wsDoneMarker         = "[DONE]"
 	wsTurnStateHeader    = "x-codex-turn-state"
 	wsOpenAIBetaHeader   = "OpenAI-Beta"
@@ -341,9 +342,17 @@ func normalizeResponseSubsequentRequest(rawJSON []byte, lastRequest []byte, last
 	// Do not expand it into a full input transcript; upstream expects the incremental payload.
 	if allowIncrementalInputWithPreviousResponseID {
 		if prev := strings.TrimSpace(gjson.GetBytes(rawJSON, "previous_response_id").String()); prev != "" {
+			lastRequestWasLocalPrewarm := gjson.GetBytes(lastRequest, "generate").Exists() && !gjson.GetBytes(lastRequest, "generate").Bool()
 			normalized, errDelete := sjson.DeleteBytes(rawJSON, "type")
 			if errDelete != nil {
 				normalized = bytes.Clone(rawJSON)
+			}
+			if lastRequestWasLocalPrewarm {
+				// The previous response ID came from a synthetic local prewarm response.
+				// Upstream never observed that response, so forwarding its ID is invalid.
+				// Keep the incremental input, but drop previous_response_id and let the
+				// next upstream turn start as a normal response.create.
+				normalized, _ = sjson.DeleteBytes(normalized, "previous_response_id")
 			}
 			if !gjson.GetBytes(normalized, "model").Exists() {
 				modelName := strings.TrimSpace(gjson.GetBytes(lastRequest, "model").String())
