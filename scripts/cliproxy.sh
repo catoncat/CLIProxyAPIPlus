@@ -107,6 +107,98 @@ do_sync_upstream() {
     echo -e "${GREEN}同步完成: ${branch} 已对齐 upstream/main 并推送到 origin${NC}"
 }
 
+resolve_management_asset_path() {
+    local static_path="${MANAGEMENT_STATIC_PATH:-}"
+    if [ -n "$static_path" ]; then
+        if [ "$(basename "$static_path")" = "management.html" ]; then
+            echo "$static_path"
+        else
+            echo "${static_path%/}/management.html"
+        fi
+        return 0
+    fi
+
+    local writable="${WRITABLE_PATH:-${writable_path:-}}"
+    if [ -n "$writable" ]; then
+        echo "${writable%/}/static/management.html"
+        return 0
+    fi
+
+    echo "${CONFIG_DIR%/}/static/management.html"
+}
+
+do_panel_update() {
+    local target_path
+    local fallback_path
+    local config_path
+    local runtime_path=""
+    local active_path=""
+
+    target_path="$(resolve_management_asset_path)"
+    fallback_path="${HOME}/.cli-proxy-api/static/management.html"
+    config_path="${CONFIG_DIR%/}/static/management.html"
+
+    echo -e "${BLUE}刷新 management.html ...${NC}"
+    echo -e "${BLUE}主目标路径: ${target_path}${NC}"
+
+    for path in "$target_path" "$fallback_path" "$config_path"; do
+        mkdir -p "$(dirname "$path")"
+        rm -f "$path"
+    done
+
+    local pid
+    pid="$(get_pid || true)"
+    if [ -n "$pid" ]; then
+        echo -e "${BLUE}服务运行中 (PID: ${pid})${NC}"
+        local runtime_pwd
+        runtime_pwd="$(ps eww -p "$pid" 2>/dev/null | tr ' ' '\n' | grep '^PWD=' | head -1 | cut -d= -f2- || true)"
+        if [ -n "$runtime_pwd" ]; then
+            runtime_path="${runtime_pwd%/}/static/management.html"
+            echo -e "${BLUE}运行时路径: ${runtime_path}${NC}"
+        fi
+    else
+        echo -e "${BLUE}服务未运行，先启动服务...${NC}"
+        "$0" start
+        pid="$(get_pid || true)"
+        if [ -n "$pid" ]; then
+            local runtime_pwd
+            runtime_pwd="$(ps eww -p "$pid" 2>/dev/null | tr ' ' '\n' | grep '^PWD=' | head -1 | cut -d= -f2- || true)"
+            if [ -n "$runtime_pwd" ]; then
+                runtime_path="${runtime_pwd%/}/static/management.html"
+                echo -e "${BLUE}运行时路径: ${runtime_path}${NC}"
+            fi
+        fi
+    fi
+
+    local panel_url
+    panel_url="${API_BASE_URL%/}/management.html"
+    echo -e "${BLUE}触发下载: ${panel_url}${NC}"
+    if ! curl -fsS "$panel_url" >/dev/null; then
+        echo -e "${RED}触发下载失败，请检查服务和网络${NC}"
+        return 1
+    fi
+
+    for path in "$target_path" "$fallback_path" "$config_path" "$runtime_path"; do
+        [ -n "$path" ] || continue
+        if [ -f "$path" ]; then
+            active_path="$path"
+            break
+        fi
+    done
+
+    if [ -z "$active_path" ]; then
+        echo -e "${RED}更新失败: 未找到 management.html${NC}"
+        echo -e "${BLUE}已检查路径: ${target_path} | ${fallback_path} | ${config_path} | ${runtime_path}${NC}"
+        return 1
+    fi
+
+    local digest
+    digest="$(shasum -a 256 "$active_path" | awk '{print $1}')"
+    echo -e "${GREEN}management.html 已更新${NC}"
+    echo -e "${BLUE}实际路径: ${active_path}${NC}"
+    echo -e "${BLUE}SHA256: ${digest}${NC}"
+}
+
 show_help() {
     cat <<EOF
 cli-proxy 本地开发管理脚本
@@ -124,6 +216,7 @@ cli-proxy 本地开发管理脚本
   build    仅编译不启动
   version  查看版本信息
   update   git pull 并重启
+  panel-update 强制刷新 management.html 到最新
   sync     同步 upstream/main 并推送到 origin（rebase + force-with-lease）
 
 环境变量:
@@ -239,6 +332,9 @@ case "$cmd" in
             echo -e "${BLUE}重新编译并重启...${NC}"
             "$0" restart
         fi
+        ;;
+    panel-update)
+        do_panel_update
         ;;
     sync)
         do_sync_upstream
