@@ -161,7 +161,7 @@ func TestNormalizeResponsesWebsocketRequestPrewarmThenIncremental(t *testing.T) 
 	}
 
 	nextRaw := []byte(`{"type":"response.create","previous_response_id":"resp-1","input":[{"type":"function_call_output","call_id":"call-1","id":"tool-out-1"}]}`)
-	normalized, next, errMsg := normalizeResponsesWebsocketRequestWithMode(nextRaw, lastRequest, []byte("[]"), true)
+	normalized, next, errMsg := normalizeResponsesWebsocketRequestWithMode(nextRaw, lastRequest, []byte("[]"), true, nil)
 	if errMsg != nil {
 		t.Fatalf("unexpected incremental error: %v", errMsg.Error)
 	}
@@ -191,7 +191,7 @@ func TestNormalizeResponsesWebsocketRequestPrewarmThenMergedWhenIncrementalDisab
 	}
 
 	nextRaw := []byte(`{"type":"response.create","previous_response_id":"resp-1","input":[{"type":"function_call_output","call_id":"call-1","id":"tool-out-1"}]}`)
-	normalized, _, errMsg := normalizeResponsesWebsocketRequestWithMode(nextRaw, lastRequest, []byte("[]"), false)
+	normalized, _, errMsg := normalizeResponsesWebsocketRequestWithMode(nextRaw, lastRequest, []byte("[]"), false, nil)
 	if errMsg != nil {
 		t.Fatalf("unexpected merged error: %v", errMsg.Error)
 	}
@@ -249,7 +249,7 @@ func TestNormalizeResponsesWebsocketRequestWithPreviousResponseIDIncremental(t *
 	]`)
 	raw := []byte(`{"type":"response.create","previous_response_id":"resp-1","input":[{"type":"function_call_output","call_id":"call-1","id":"tool-out-1"}]}`)
 
-	normalized, next, errMsg := normalizeResponsesWebsocketRequestWithMode(raw, lastRequest, lastResponseOutput, true)
+	normalized, next, errMsg := normalizeResponsesWebsocketRequestWithMode(raw, lastRequest, lastResponseOutput, true, nil)
 	if errMsg != nil {
 		t.Fatalf("unexpected error: %v", errMsg.Error)
 	}
@@ -285,7 +285,7 @@ func TestNormalizeResponsesWebsocketRequestWithPreviousResponseIDMergedWhenIncre
 	]`)
 	raw := []byte(`{"type":"response.create","previous_response_id":"resp-1","input":[{"type":"function_call_output","call_id":"call-1","id":"tool-out-1"}]}`)
 
-	normalized, next, errMsg := normalizeResponsesWebsocketRequestWithMode(raw, lastRequest, lastResponseOutput, false)
+	normalized, next, errMsg := normalizeResponsesWebsocketRequestWithMode(raw, lastRequest, lastResponseOutput, false, nil)
 	if errMsg != nil {
 		t.Fatalf("unexpected error: %v", errMsg.Error)
 	}
@@ -459,6 +459,7 @@ func TestForwardResponsesWebsocketPreservesCompletedEvent(t *testing.T) {
 			&bodyLog,
 			"session-1",
 			true,
+			nil,
 		)
 		if err != nil {
 			serverErrCh <- err

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -47,6 +48,96 @@ var responsesWebsocketUpgrader = websocket.Upgrader{
 	},
 }
 
+// responsesWebsocketTelemetry keeps process-level counters to help diagnose
+// prompt-cache effectiveness and websocket prewarm behavior regressions.
+var responsesWebsocketTelemetry struct {
+	localPrewarmHandled    atomic.Int64
+	upstreamPrewarmHandled atomic.Int64
+	prevResponseIDDropped  atomic.Int64
+	responseCompletedSeen  atomic.Int64
+	cachedTokensTotal      atomic.Int64
+	inputTokensTotal       atomic.Int64
+	totalTokensTotal       atomic.Int64
+}
+
+type websocketSessionTelemetry struct {
+	localPrewarmHandled    int64
+	upstreamPrewarmHandled int64
+	prevResponseIDDropped  int64
+	responseCompletedSeen  int64
+	cachedTokensTotal      int64
+	inputTokensTotal       int64
+	totalTokensTotal       int64
+}
+
+func (t *websocketSessionTelemetry) onLocalPrewarm() {
+	if t == nil {
+		return
+	}
+	t.localPrewarmHandled++
+	responsesWebsocketTelemetry.localPrewarmHandled.Add(1)
+}
+
+func (t *websocketSessionTelemetry) onUpstreamPrewarm() {
+	if t == nil {
+		return
+	}
+	t.upstreamPrewarmHandled++
+	responsesWebsocketTelemetry.upstreamPrewarmHandled.Add(1)
+}
+
+func (t *websocketSessionTelemetry) onPreviousResponseIDDropped() {
+	if t == nil {
+		return
+	}
+	t.prevResponseIDDropped++
+	responsesWebsocketTelemetry.prevResponseIDDropped.Add(1)
+}
+
+func (t *websocketSessionTelemetry) onCompletedPayload(payload []byte) {
+	if t == nil {
+		return
+	}
+	t.responseCompletedSeen++
+	responsesWebsocketTelemetry.responseCompletedSeen.Add(1)
+
+	cachedTokens := gjson.GetBytes(payload, "response.usage.input_tokens_details.cached_tokens").Int()
+	inputTokens := gjson.GetBytes(payload, "response.usage.input_tokens").Int()
+	totalTokens := gjson.GetBytes(payload, "response.usage.total_tokens").Int()
+
+	if cachedTokens < 0 {
+		cachedTokens = 0
+	}
+	if inputTokens < 0 {
+		inputTokens = 0
+	}
+	if totalTokens < 0 {
+		totalTokens = 0
+	}
+
+	t.cachedTokensTotal += cachedTokens
+	t.inputTokensTotal += inputTokens
+	t.totalTokensTotal += totalTokens
+
+	responsesWebsocketTelemetry.cachedTokensTotal.Add(cachedTokens)
+	responsesWebsocketTelemetry.inputTokensTotal.Add(inputTokens)
+	responsesWebsocketTelemetry.totalTokensTotal.Add(totalTokens)
+}
+
+func (t *websocketSessionTelemetry) cacheHitRatePercent() float64 {
+	if t == nil || t.inputTokensTotal <= 0 {
+		return 0
+	}
+	return float64(t.cachedTokensTotal) * 100 / float64(t.inputTokensTotal)
+}
+
+func telemetryCacheHitRatePercent(cachedTokens, inputTokens int64) float64 {
+	if inputTokens <= 0 {
+		return 0
+	}
+	return float64(cachedTokens) * 100 / float64(inputTokens)
+}
+
 // ResponsesWebsocket handles websocket requests for /v1/responses.
 // It accepts `response.create` and `response.append` requests and streams
 // response events back as JSON websocket text messages.
@@ -64,7 +155,36 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 	log.Infof("responses websocket: client connected id=%s remote=%s", passthroughSessionID, clientRemoteAddr)
 	var wsTerminateErr error
 	var wsBodyLog strings.Builder
+	var wsMetrics websocketSessionTelemetry
 	defer func() {
+		globalLocalPrewarm := responsesWebsocketTelemetry.localPrewarmHandled.Load()
+		globalUpstreamPrewarm := responsesWebsocketTelemetry.upstreamPrewarmHandled.Load()
+		globalPrevDropped := responsesWebsocketTelemetry.prevResponseIDDropped.Load()
+		globalCompleted := responsesWebsocketTelemetry.responseCompletedSeen.Load()
+		globalCached := responsesWebsocketTelemetry.cachedTokensTotal.Load()
+		globalInput := responsesWebsocketTelemetry.inputTokensTotal.Load()
+		globalTotal := responsesWebsocketTelemetry.totalTokensTotal.Load()
+		log.Infof(
+			"responses websocket telemetry: session_id=%s local_prewarm=%d upstream_prewarm=%d prev_response_id_dropped=%d completed_events=%d cached_tokens=%d input_tokens=%d total_tokens=%d cache_hit_rate=%.2f%% global_local_prewarm=%d global_upstream_prewarm=%d global_prev_response_id_dropped=%d global_completed_events=%d global_cached_tokens=%d global_input_tokens=%d global_total_tokens=%d global_cache_hit_rate=%.2f%%",
+			passthroughSessionID,
+			wsMetrics.localPrewarmHandled,
+			wsMetrics.upstreamPrewarmHandled,
+			wsMetrics.prevResponseIDDropped,
+			wsMetrics.responseCompletedSeen,
+			wsMetrics.cachedTokensTotal,
+			wsMetrics.inputTokensTotal,
+			wsMetrics.totalTokensTotal,
+			wsMetrics.cacheHitRatePercent(),
+			globalLocalPrewarm,
+			globalUpstreamPrewarm,
+			globalPrevDropped,
+			globalCompleted,
+			globalCached,
+			globalInput,
+			globalTotal,
+			telemetryCacheHitRatePercent(globalCached, globalInput),
+		)
+
 		if wsTerminateErr != nil {
 			// log.Infof("responses websocket: session closing id=%s reason=%v", passthroughSessionID, wsTerminateErr)
 		} else {
@@ -129,6 +249,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			lastRequest,
 			lastResponseOutput,
 			allowIncrementalInputWithPreviousResponseID,
+			&wsMetrics,
 		)
 		if errMsg != nil {
 			h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errMsg)
@@ -154,6 +275,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			continue
 		}
 		if shouldHandleResponsesWebsocketPrewarmLocally(payload, lastRequest, allowIncrementalInputWithPreviousResponseID) {
+			wsMetrics.onLocalPrewarm()
 			if updated, errDelete := sjson.DeleteBytes(requestJSON, "generate"); errDelete == nil {
 				requestJSON = updated
 			}
@@ -180,6 +302,9 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			}
 			continue
 		}
+		if isResponsesWebsocketPrewarmRequest(payload) {
+			wsMetrics.onUpstreamPrewarm()
+		}
 		lastRequest = updatedLastRequest
 
 		modelName := gjson.GetBytes(requestJSON, "model").String()
@@ -195,7 +320,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		}
 		dataChan, _, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, requestJSON, "")
 
-		completedOutput, errForward := h.forwardResponsesWebsocket(c, conn, cliCancel, dataChan, errChan, &wsBodyLog, passthroughSessionID, useCompletedEvents)
+		completedOutput, errForward := h.forwardResponsesWebsocket(c, conn, cliCancel, dataChan, errChan, &wsBodyLog, passthroughSessionID, useCompletedEvents, &wsMetrics)
 		if errForward != nil {
 			wsTerminateErr = errForward
 			appendWebsocketEvent(&wsBodyLog, "disconnect", []byte(errForward.Error()))
@@ -229,10 +354,10 @@ func websocketUpgradeHeaders(req *http.Request) http.Header {
 }
 
 func normalizeResponsesWebsocketRequest(rawJSON []byte, lastRequest []byte, lastResponseOutput []byte) ([]byte, []byte, *interfaces.ErrorMessage) {
-	return normalizeResponsesWebsocketRequestWithMode(rawJSON, lastRequest, lastResponseOutput, true)
+	return normalizeResponsesWebsocketRequestWithMode(rawJSON, lastRequest, lastResponseOutput, true, nil)
 }
 
-func normalizeResponsesWebsocketRequestWithMode(rawJSON []byte, lastRequest []byte, lastResponseOutput []byte, allowIncrementalInputWithPreviousResponseID bool) ([]byte, []byte, *interfaces.ErrorMessage) {
+func normalizeResponsesWebsocketRequestWithMode(rawJSON []byte, lastRequest []byte, lastResponseOutput []byte, allowIncrementalInputWithPreviousResponseID bool, metrics *websocketSessionTelemetry) ([]byte, []byte, *interfaces.ErrorMessage) {
 	requestType := strings.TrimSpace(gjson.GetBytes(rawJSON, "type").String())
 	switch requestType {
 	case wsRequestTypeCreate:
@@ -240,10 +365,10 @@ func normalizeResponsesWebsocketRequestWithMode(rawJSON []byte, lastRequest []by
 		if len(lastRequest) == 0 {
 			return normalizeResponseCreateRequest(rawJSON)
 		}
-		return normalizeResponseSubsequentRequest(rawJSON, lastRequest, lastResponseOutput, allowIncrementalInputWithPreviousResponseID)
+		return normalizeResponseSubsequentRequest(rawJSON, lastRequest, lastResponseOutput, allowIncrementalInputWithPreviousResponseID, metrics)
 	case wsRequestTypeAppend:
 		// log.Infof("responses websocket: response.append request")
-		return normalizeResponseSubsequentRequest(rawJSON, lastRequest, lastResponseOutput, allowIncrementalInputWithPreviousResponseID)
+		return normalizeResponseSubsequentRequest(rawJSON, lastRequest, lastResponseOutput, allowIncrementalInputWithPreviousResponseID, metrics)
 	default:
 		return nil, lastRequest, &interfaces.ErrorMessage{
 			StatusCode: http.StatusBadRequest,
@@ -442,7 +567,7 @@ func buildResponsesWebsocketPrewarmPayloads(requestJSON []byte, useCompletedEven
 	return responseID, [][]byte{createdJSON, completedJSON}
 }
 
-func normalizeResponseSubsequentRequest(rawJSON []byte, lastRequest []byte, lastResponseOutput []byte, allowIncrementalInputWithPreviousResponseID bool) ([]byte, []byte, *interfaces.ErrorMessage) {
+func normalizeResponseSubsequentRequest(rawJSON []byte, lastRequest []byte, lastResponseOutput []byte, allowIncrementalInputWithPreviousResponseID bool, metrics *websocketSessionTelemetry) ([]byte, []byte, *interfaces.ErrorMessage) {
 	if len(lastRequest) == 0 {
 		return nil, lastRequest, &interfaces.ErrorMessage{
 			StatusCode: http.StatusBadRequest,
@@ -473,6 +598,9 @@ func normalizeResponseSubsequentRequest(rawJSON []byte, lastRequest []byte, last
 				// Keep the incremental input, but drop previous_response_id and let the
 				// next upstream turn start as a normal response.create.
 				normalized, _ = sjson.DeleteBytes(normalized, "previous_response_id")
+				if metrics != nil {
+					metrics.onPreviousResponseIDDropped()
+				}
 			}
 			if !gjson.GetBytes(normalized, "model").Exists() {
 				modelName := strings.TrimSpace(gjson.GetBytes(lastRequest, "model").String())
@@ -614,6 +742,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 	wsBodyLog *strings.Builder,
 	sessionID string,
 	useCompletedEvents bool,
+	metrics *websocketSessionTelemetry,
 ) ([]byte, error) {
 	completed := false
 	completedOutput := []byte("[]")
@@ -698,6 +827,9 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 				if eventType == wsEventTypeCompleted {
 					completed = true
 					completedOutput = responseCompletedOutputFromPayload(payloads[i])
+					if metrics != nil {
+						metrics.onCompletedPayload(payloads[i])
+					}
 					if !useCompletedEvents {
 						payloads[i], _ = sjson.SetBytes(payloads[i], "type", wsEventTypeDone)
 					}
