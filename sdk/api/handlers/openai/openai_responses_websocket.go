@@ -203,6 +203,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 	var lastRequest []byte
 	lastResponseOutput := []byte("[]")
 	pinnedAuthID := ""
+	lastLocalPrewarmResponseID := ""
 
 	for {
 		msgType, payload, errReadMessage := conn.ReadMessage()
@@ -249,6 +250,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			lastRequest,
 			lastResponseOutput,
 			allowIncrementalInputWithPreviousResponseID,
+			lastLocalPrewarmResponseID,
 			&wsMetrics,
 		)
 		if errMsg != nil {
@@ -283,7 +285,8 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				updatedLastRequest = updated
 			}
 			lastRequest = updatedLastRequest
-			_, payloads := buildResponsesWebsocketPrewarmPayloads(requestJSON, useCompletedEvents)
+			responseID, payloads := buildResponsesWebsocketPrewarmPayloads(requestJSON, useCompletedEvents)
+			lastLocalPrewarmResponseID = strings.TrimSpace(responseID)
 			lastResponseOutput = []byte("[]")
 			for _, syntheticPayload := range payloads {
 				markAPIResponseTimestamp(c)
@@ -354,10 +357,10 @@ func websocketUpgradeHeaders(req *http.Request) http.Header {
 }
 
 func normalizeResponsesWebsocketRequest(rawJSON []byte, lastRequest []byte, lastResponseOutput []byte) ([]byte, []byte, *interfaces.ErrorMessage) {
-	return normalizeResponsesWebsocketRequestWithMode(rawJSON, lastRequest, lastResponseOutput, true, nil)
+	return normalizeResponsesWebsocketRequestWithMode(rawJSON, lastRequest, lastResponseOutput, true, "", nil)
 }
 
-func normalizeResponsesWebsocketRequestWithMode(rawJSON []byte, lastRequest []byte, lastResponseOutput []byte, allowIncrementalInputWithPreviousResponseID bool, metrics *websocketSessionTelemetry) ([]byte, []byte, *interfaces.ErrorMessage) {
+func normalizeResponsesWebsocketRequestWithMode(rawJSON []byte, lastRequest []byte, lastResponseOutput []byte, allowIncrementalInputWithPreviousResponseID bool, localPrewarmResponseID string, metrics *websocketSessionTelemetry) ([]byte, []byte, *interfaces.ErrorMessage) {
 	requestType := strings.TrimSpace(gjson.GetBytes(rawJSON, "type").String())
 	switch requestType {
 	case wsRequestTypeCreate:
@@ -365,10 +368,10 @@ func normalizeResponsesWebsocketRequestWithMode(rawJSON []byte, lastRequest []by
 		if len(lastRequest) == 0 {
 			return normalizeResponseCreateRequest(rawJSON)
 		}
-		return normalizeResponseSubsequentRequest(rawJSON, lastRequest, lastResponseOutput, allowIncrementalInputWithPreviousResponseID, metrics)
+		return normalizeResponseSubsequentRequest(rawJSON, lastRequest, lastResponseOutput, allowIncrementalInputWithPreviousResponseID, localPrewarmResponseID, metrics)
 	case wsRequestTypeAppend:
 		// log.Infof("responses websocket: response.append request")
-		return normalizeResponseSubsequentRequest(rawJSON, lastRequest, lastResponseOutput, allowIncrementalInputWithPreviousResponseID, metrics)
+		return normalizeResponseSubsequentRequest(rawJSON, lastRequest, lastResponseOutput, allowIncrementalInputWithPreviousResponseID, localPrewarmResponseID, metrics)
 	default:
 		return nil, lastRequest, &interfaces.ErrorMessage{
 			StatusCode: http.StatusBadRequest,
@@ -567,7 +570,7 @@ func buildResponsesWebsocketPrewarmPayloads(requestJSON []byte, useCompletedEven
 	return responseID, [][]byte{createdJSON, completedJSON}
 }
 
-func normalizeResponseSubsequentRequest(rawJSON []byte, lastRequest []byte, lastResponseOutput []byte, allowIncrementalInputWithPreviousResponseID bool, metrics *websocketSessionTelemetry) ([]byte, []byte, *interfaces.ErrorMessage) {
+func normalizeResponseSubsequentRequest(rawJSON []byte, lastRequest []byte, lastResponseOutput []byte, allowIncrementalInputWithPreviousResponseID bool, localPrewarmResponseID string, metrics *websocketSessionTelemetry) ([]byte, []byte, *interfaces.ErrorMessage) {
 	if len(lastRequest) == 0 {
 		return nil, lastRequest, &interfaces.ErrorMessage{
 			StatusCode: http.StatusBadRequest,
@@ -587,12 +590,11 @@ func normalizeResponseSubsequentRequest(rawJSON []byte, lastRequest []byte, last
 	// Do not expand it into a full input transcript; upstream expects the incremental payload.
 	if allowIncrementalInputWithPreviousResponseID {
 		if prev := strings.TrimSpace(gjson.GetBytes(rawJSON, "previous_response_id").String()); prev != "" {
-			lastRequestWasLocalPrewarm := gjson.GetBytes(lastRequest, "generate").Exists() && !gjson.GetBytes(lastRequest, "generate").Bool()
 			normalized, errDelete := sjson.DeleteBytes(rawJSON, "type")
 			if errDelete != nil {
 				normalized = bytes.Clone(rawJSON)
 			}
-			if lastRequestWasLocalPrewarm {
+			if localPrewarmResponseID != "" && prev == localPrewarmResponseID {
 				// The previous response ID came from a synthetic local prewarm response.
 				// Upstream never observed that response, so forwarding its ID is invalid.
 				// Keep the incremental input, but drop previous_response_id and let the
