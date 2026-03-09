@@ -160,7 +160,6 @@ cliproxy status
 - `CLIPROXY_LOG_FILE`：日志文件路径（默认 `/tmp/cli-proxy.log`）
 - `CLIPROXY_PID_FILE`：PID 文件路径（默认 `/tmp/cli-proxy.pid`）
 - `CLIPROXY_DEV_BIN`：开发二进制输出路径（默认 `/tmp/cli-proxy-dev`）
-
 ## 贡献
 
 该项目仅接受第三方供应商支持的 Pull Request。任何非第三方供应商支持的 Pull Request 都将被拒绝。

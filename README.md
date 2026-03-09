@@ -161,7 +161,6 @@ Optional environment variables:
 - `CLIPROXY_LOG_FILE`: Log file path (default: `/tmp/cli-proxy.log`)
 - `CLIPROXY_PID_FILE`: PID file path (default: `/tmp/cli-proxy.pid`)
 - `CLIPROXY_DEV_BIN`: Compiled dev binary path (default: `/tmp/cli-proxy-dev`)
-
 ## Contributing
 
 This project only accepts pull requests that relate to third-party provider support. Any pull requests unrelated to third-party provider support will be rejected.
